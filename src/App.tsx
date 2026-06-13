@@ -85,6 +85,11 @@ type GalleryImage = {
   providerName?: string;
 };
 
+type ImageApiResult = {
+  images: GalleryImage[];
+  warning: string;
+};
+
 type ApiDiagnostic = {
   code: string;
   title: string;
@@ -173,7 +178,7 @@ async function callBackendImageApi(
   prompt: string,
   uploadFile: File | null,
   token: string,
-): Promise<GalleryImage[]> {
+): Promise<ImageApiResult> {
   const form = new FormData();
   form.append("prompt", prompt);
   form.append("model", config.model);
@@ -200,15 +205,18 @@ async function callBackendImageApi(
   const images = Array.isArray(payload.images) ? payload.images.filter((item: unknown) => typeof item === "string") : [];
   if (!images.length) throw new Error("后端响应中没有可用图片。");
 
-  return images.map((src: string, index: number) => ({
-    id: crypto.randomUUID(),
-    src,
-    prompt,
-    ratio: params.ratio,
-    createdAt: payload.createdAt || new Date(Date.now() + index).toISOString(),
-    source: "api",
-    providerName: payload.provider?.name,
-  }));
+  return {
+    warning: typeof payload.warning === "string" ? payload.warning : "",
+    images: images.map((src: string, index: number) => ({
+      id: crypto.randomUUID(),
+      src,
+      prompt,
+      ratio: params.ratio,
+      createdAt: payload.createdAt || new Date(Date.now() + index).toISOString(),
+      source: "api",
+      providerName: payload.provider?.name,
+    })),
+  };
 }
 
 function downloadImage(image: GalleryImage) {
@@ -244,6 +252,7 @@ export default function App() {
   const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
   const [error, setError] = useState("");
   const [diagnostic, setDiagnostic] = useState<ApiDiagnostic | null>(null);
+  const [notice, setNotice] = useState("");
   const [userProviders, setUserProviders] = useState<Provider[]>([]);
   const [platformProviders, setPlatformProviders] = useState<Provider[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
@@ -358,38 +367,46 @@ export default function App() {
     if (!prompt.trim()) {
       setError("请先输入提示词，或从提示词库选择一个模板。");
       setDiagnostic(null);
+      setNotice("");
       return;
     }
     if (backendStatus !== "ready") {
       setError("后端离线，请先启动 npm run dev。");
       setDiagnostic(null);
+      setNotice("");
       return;
     }
     if (config.providerSource === "guest" && (!config.guestBaseUrl.trim() || !config.guestApiKey.trim())) {
       setError("请先填写服务地址和访问凭证，系统只会在本次生成时使用。");
       setDiagnostic(null);
+      setNotice("");
       return;
     }
     if (config.providerSource !== "guest" && !config.providerId) {
       setError("请选择一个可用连接。");
       setDiagnostic(null);
+      setNotice("");
       return;
     }
 
     setError("");
     setDiagnostic(null);
+    setNotice("");
     setIsGenerating(true);
     try {
-      const results = await callBackendImageApi(config, params, prompt.trim(), uploadFile, token);
-      setGallery((current) => [...results, ...current]);
+      const result = await callBackendImageApi(config, params, prompt.trim(), uploadFile, token);
+      setGallery((current) => [...result.images, ...current]);
+      setNotice(result.warning);
       refreshUsage();
     } catch (err) {
       if (err instanceof ImageApiError && err.diagnostic) {
         setError(err.message);
         setDiagnostic(err.diagnostic);
+        setNotice("");
       } else {
         setError(err instanceof Error ? err.message : "生成失败，请检查连接配置。");
         setDiagnostic(null);
+        setNotice("");
       }
     } finally {
       setIsGenerating(false);
@@ -473,6 +490,7 @@ export default function App() {
               isGenerating={isGenerating}
               error={error}
               diagnostic={diagnostic}
+              notice={notice}
               currentChannelLabel={currentChannelLabel}
               config={config}
               userProviders={userProviders}
@@ -628,6 +646,7 @@ function StudioPanel(props: {
   isGenerating: boolean;
   error: string;
   diagnostic: ApiDiagnostic | null;
+  notice: string;
   currentChannelLabel: string;
   config: AppConfig;
   userProviders: Provider[];
@@ -781,6 +800,11 @@ function StudioPanel(props: {
         <PillGroup label="格式" options={[{ label: "PNG", value: "png" }, { label: "WEBP", value: "webp" }, { label: "JPEG", value: "jpeg" }]} value={props.params.format} onChange={(value) => props.onParamsChange((current) => ({ ...current, format: value }))} />
       </div>
 
+      {props.notice && !props.error && (
+        <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 rounded-2xl border border-ember/35 bg-ember/10 px-4 py-3 text-sm leading-6 text-ember">
+          {props.notice}
+        </motion.div>
+      )}
       {props.error && <DiagnosticPanel error={props.error} diagnostic={props.diagnostic} />}
 
       <button onClick={props.onGenerate} disabled={props.isGenerating} className="mt-5 flex w-full items-center justify-center gap-3 rounded-3xl bg-gradient-to-r from-volt via-aurora to-plasma px-5 py-4 text-sm font-extrabold text-white shadow-magenta transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-70">

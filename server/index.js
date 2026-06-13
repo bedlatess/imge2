@@ -771,6 +771,7 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
   const isEdit = Boolean(req.file);
   const upstreamUrl = buildUpstreamUrl(provider, isEdit);
   const model = String(req.body.model || provider.defaultModel || DEFAULT_MODEL);
+  const requestedCount = Math.max(1, Number(req.body.n || 1) || 1);
   const urlDiagnostic = validateProviderUrl(provider, isEdit);
   if (urlDiagnostic) {
     logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: urlDiagnostic.title });
@@ -796,7 +797,7 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
         model,
         prompt,
         size: req.body.size || "1024x1024",
-        n: Number(req.body.n || 1),
+        n: requestedCount,
         quality: req.body.quality || "auto",
         output_format: outputFormat,
       };
@@ -836,6 +837,9 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
       model,
       mode: isEdit ? "edit" : "generate",
       provider: { name: provider.name, scope: provider.scope },
+      requestedCount,
+      returnedCount: images.length,
+      warning: images.length < requestedCount ? `服务商实际返回 ${images.length}/${requestedCount} 张图片。部分模型或中转接口会忽略生成数量参数。` : "",
       createdAt: nowIso(),
     });
   } catch (error) {
