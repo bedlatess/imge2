@@ -112,6 +112,8 @@ class ImageApiError extends Error {
 
 const STORAGE_KEY = "astraforge.app.config";
 const TOKEN_KEY = "astraforge.session.token";
+const GALLERY_STORAGE_KEY = "astraforge.local.gallery";
+const LOCAL_USAGE_STORAGE_KEY = "astraforge.local.usage";
 const DEFAULT_BACKEND_URL = typeof window !== "undefined" && window.location.port !== "5173"
   ? window.location.origin
   : "http://127.0.0.1:8787";
@@ -146,9 +148,33 @@ const modelPresets = [
 function loadConfig(): AppConfig {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG;
+    return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved), guestApiKey: "" } : DEFAULT_CONFIG;
   } catch {
     return DEFAULT_CONFIG;
+  }
+}
+
+function loadLocalGallery(): GalleryImage[] {
+  try {
+    const saved = localStorage.getItem(GALLERY_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item?.src === "string" && typeof item?.prompt === "string").slice(0, 80) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadLocalUsageLogs(): UsageLog[] {
+  try {
+    const saved = localStorage.getItem(LOCAL_USAGE_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : [];
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((item) => typeof item?.id === "string" && typeof item?.createdAt === "string")
+          .slice(0, 200)
+      : [];
+  } catch {
+    return [];
   }
 }
 
@@ -238,35 +264,52 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [params, setParams] = useState<GenerationParams>({
-    count: 2,
+    count: 1,
     denoising: 0.42,
     ratio: "1024x1024",
-    quality: "high",
+    quality: "auto",
     format: "png",
   });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [gallery, setGallery] = useState<GalleryImage[]>([]);
+  const [gallery, setGallery] = useState<GalleryImage[]>(loadLocalGallery);
   const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
   const [error, setError] = useState("");
   const [diagnostic, setDiagnostic] = useState<ApiDiagnostic | null>(null);
   const [notice, setNotice] = useState("");
   const [userProviders, setUserProviders] = useState<Provider[]>([]);
   const [platformProviders, setPlatformProviders] = useState<Provider[]>([]);
-  const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
+  const [usageLogs, setUsageLogs] = useState<UsageLog[]>(loadLocalUsageLogs);
   const [adminProviders, setAdminProviders] = useState<Provider[]>([]);
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    const { guestApiKey: _guestApiKey, ...safeConfig } = config;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safeConfig));
   }, [config]);
 
   useEffect(() => {
     if (token) localStorage.setItem(TOKEN_KEY, token);
     else localStorage.removeItem(TOKEN_KEY);
   }, [token]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GALLERY_STORAGE_KEY, JSON.stringify(gallery.slice(0, 80)));
+    } catch {
+      setNotice("浏览器本地存储空间不足，当前图片只会保留在本次页面会话中。");
+    }
+  }, [gallery]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_USAGE_STORAGE_KEY, JSON.stringify(usageLogs.slice(0, 200)));
+    } catch {
+      setNotice("浏览器本地存储空间不足，使用记录只会保留在本次页面会话中。");
+    }
+  }, [usageLogs]);
 
   useEffect(() => {
     let active = true;
@@ -397,26 +440,80 @@ export default function App() {
       const result = await callBackendImageApi(config, params, prompt.trim(), uploadFile, token);
       setGallery((current) => [...result.images, ...current]);
       setNotice(result.warning);
-      refreshUsage();
+      addLocalUsageLog({
+        providerScope: config.providerSource,
+        providerName: currentChannelLabel,
+        prompt: prompt.trim(),
+        model: config.model,
+        mode: uploadFile ? "edit" : "generate",
+        imageCount: result.images.length,
+        status: "success",
+      });
     } catch (err) {
       if (err instanceof ImageApiError && err.diagnostic) {
         setError(err.message);
         setDiagnostic(err.diagnostic);
         setNotice("");
+        addLocalUsageLog({
+          providerScope: config.providerSource,
+          providerName: currentChannelLabel,
+          prompt: prompt.trim(),
+          model: config.model,
+          mode: uploadFile ? "edit" : "generate",
+          imageCount: 0,
+          status: "failed",
+          error: err.diagnostic.title || err.message,
+        });
       } else {
-        setError(err instanceof Error ? err.message : "生成失败，请检查连接配置。");
+        const message = err instanceof Error ? err.message : "生成失败，请检查连接配置。";
+        setError(message);
         setDiagnostic(null);
         setNotice("");
+        addLocalUsageLog({
+          providerScope: config.providerSource,
+          providerName: currentChannelLabel,
+          prompt: prompt.trim(),
+          model: config.model,
+          mode: uploadFile ? "edit" : "generate",
+          imageCount: 0,
+          status: "failed",
+          error: message,
+        });
       }
     } finally {
       setIsGenerating(false);
     }
   }
 
+  function addLocalUsageLog(log: Omit<UsageLog, "id" | "createdAt">) {
+    setUsageLogs((current) => [
+      {
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        ...log,
+      },
+      ...current,
+    ].slice(0, 200));
+  }
+
   function refreshUsage() {
-    apiFetch<{ logs: UsageLog[] }>(config.backendUrl, "/api/usage", {}, token)
-      .then((payload) => setUsageLogs(payload.logs))
-      .catch(() => setUsageLogs([]));
+    setUsageLogs(loadLocalUsageLogs());
+  }
+
+  function deleteUsageLog(id: string) {
+    setUsageLogs((current) => current.filter((log) => log.id !== id));
+  }
+
+  function clearUsageLogs() {
+    setUsageLogs([]);
+  }
+
+  async function deleteUserProvider(id: string) {
+    await apiFetch(config.backendUrl, `/api/user/providers/${id}`, { method: "DELETE" }, token);
+    if (config.providerSource === "user" && config.providerId === id) {
+      setConfig((current) => ({ ...current, providerSource: "guest", providerId: "" }));
+    }
+    refreshProviders();
   }
 
   function refreshAdmin() {
@@ -466,9 +563,10 @@ export default function App() {
             onConfigChange={setConfig}
             onOpenAuth={() => setAuthOpen(true)}
             onRefresh={refreshProviders}
+            onDeleteUserProvider={deleteUserProvider}
           />
         )}
-        {activeView === "usage" && <UsageView logs={usageLogs} user={user} onOpenAuth={() => setAuthOpen(true)} onRefresh={refreshUsage} />}
+        {activeView === "usage" && <UsageView logs={usageLogs} onRefresh={refreshUsage} onDelete={deleteUsageLog} onClear={clearUsageLogs} />}
         {activeView === "admin" && (
           <AdminView
             user={user}
@@ -663,6 +761,14 @@ function StudioPanel(props: {
   onShowChannels: () => void;
   onConfigChange: (config: AppConfig | ((current: AppConfig) => AppConfig)) => void;
 }) {
+  function applySpeedPreset() {
+    props.onParamsChange((current) => ({ ...current, count: 1, quality: "auto", ratio: current.ratio === "auto" ? "1024x1024" : current.ratio }));
+  }
+
+  function applyQualityPreset() {
+    props.onParamsChange((current) => ({ ...current, count: Math.max(current.count, 1), quality: "high" }));
+  }
+
   return (
     <motion.aside initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="glass h-fit rounded-[28px] p-4 sm:p-5 lg:sticky lg:top-5">
       <div className="mb-5 flex items-center justify-between">
@@ -759,7 +865,7 @@ function StudioPanel(props: {
             </button>
             <div className="relative mt-auto w-full text-left">
               <p className="truncate text-sm font-bold">{props.uploadFile?.name}</p>
-              <p className="mt-1 text-xs text-white/62">Image-to-Image 已启用</p>
+              <p className="mt-1 text-xs text-white/62">Image-to-Image 已启用，参考图仅内存转发</p>
             </div>
           </>
         ) : (
@@ -768,7 +874,7 @@ function StudioPanel(props: {
               <UploadCloud className="h-7 w-7" />
             </div>
             <p className="text-sm font-bold">拖拽上传垫图</p>
-            <p className="mt-2 max-w-64 text-xs leading-5 text-white/52">支持 PNG / JPG / WEBP。上传后自动走图生图编辑接口。</p>
+            <p className="mt-2 max-w-64 text-xs leading-5 text-white/52">支持 PNG / JPG / WEBP。参考图只在生成时内存转发，不会保存到服务器。</p>
           </>
         )}
       </label>
@@ -790,6 +896,14 @@ function StudioPanel(props: {
       </div>
 
       <div className="mt-5 grid gap-4">
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={applySpeedPreset} className="rounded-2xl border border-volt/30 bg-volt/10 px-3 py-2 text-xs font-extrabold text-volt transition hover:bg-volt hover:text-ink">
+            速度优先
+          </button>
+          <button type="button" onClick={applyQualityPreset} className="rounded-2xl border border-white/12 bg-white/8 px-3 py-2 text-xs font-extrabold text-white/70 transition hover:border-plasma/50 hover:text-plasma">
+            质量优先
+          </button>
+        </div>
         <SliderField label="生成数量" value={props.params.count} min={1} max={4} step={1} suffix="张" onChange={(value) => props.onParamsChange((current) => ({ ...current, count: value }))} />
         <SliderField label="重绘幅度" value={props.params.denoising} min={0.05} max={0.95} step={0.01} suffix="" onChange={(value) => props.onParamsChange((current) => ({ ...current, denoising: value }))} />
       </div>
@@ -1002,7 +1116,27 @@ function PromptLibrary({ onUseTemplate }: { onUseTemplate: (template: PromptTemp
   );
 }
 
-function ChannelsView({ config, token, user, userProviders, platformProviders, onConfigChange, onOpenAuth, onRefresh }: { config: AppConfig; token: string; user: User | null; userProviders: Provider[]; platformProviders: Provider[]; onConfigChange: (config: AppConfig | ((current: AppConfig) => AppConfig)) => void; onOpenAuth: () => void; onRefresh: () => void }) {
+function ChannelsView({
+  config,
+  token,
+  user,
+  userProviders,
+  platformProviders,
+  onConfigChange,
+  onOpenAuth,
+  onRefresh,
+  onDeleteUserProvider,
+}: {
+  config: AppConfig;
+  token: string;
+  user: User | null;
+  userProviders: Provider[];
+  platformProviders: Provider[];
+  onConfigChange: (config: AppConfig | ((current: AppConfig) => AppConfig)) => void;
+  onOpenAuth: () => void;
+  onRefresh: () => void;
+  onDeleteUserProvider: (id: string) => void;
+}) {
   const [form, setForm] = useState({ name: "", baseUrl: "https://api.openai.com/v1", apiKey: "", defaultModel: "gpt-image-2", type: "openai-compatible" });
   const [message, setMessage] = useState("");
   async function addProvider() {
@@ -1045,7 +1179,7 @@ function ChannelsView({ config, token, user, userProviders, platformProviders, o
         <div className="grid gap-3 md:grid-cols-2">
           <ProviderCard title="快速连接" subtitle="无需登录，凭证只用于本次生成" active={config.providerSource === "guest"} onUse={() => onConfigChange((current) => ({ ...current, providerSource: "guest", providerId: "" }))} />
           {userProviders.map((provider) => (
-            <ProviderCard key={provider.id} title={provider.name} subtitle={`个人连接 · ${provider.defaultModel}`} active={config.providerSource === "user" && config.providerId === provider.id} onUse={() => onConfigChange((current) => ({ ...current, providerSource: "user", providerId: provider.id, model: provider.defaultModel }))} />
+            <ProviderCard key={provider.id} title={provider.name} subtitle={`个人连接 · ${provider.defaultModel}`} active={config.providerSource === "user" && config.providerId === provider.id} onUse={() => onConfigChange((current) => ({ ...current, providerSource: "user", providerId: provider.id, model: provider.defaultModel }))} onDelete={() => onDeleteUserProvider(provider.id)} />
           ))}
           {platformProviders.map((provider) => (
             <ProviderCard key={provider.id} title={provider.name} subtitle={`工作区授权 · ${provider.defaultModel}`} active={config.providerSource === "platform" && config.providerId === provider.id} onUse={() => onConfigChange((current) => ({ ...current, providerSource: "platform", providerId: provider.id, model: provider.defaultModel }))} />
@@ -1056,33 +1190,51 @@ function ChannelsView({ config, token, user, userProviders, platformProviders, o
   );
 }
 
-function ProviderCard({ title, subtitle, active, onUse }: { title: string; subtitle: string; active: boolean; onUse: () => void }) {
+function ProviderCard({ title, subtitle, active, onUse, onDelete }: { title: string; subtitle: string; active: boolean; onUse: () => void; onDelete?: () => void }) {
   return (
     <div className={`rounded-3xl border p-4 ${active ? "border-volt bg-volt/10 shadow-glow" : "border-white/10 bg-white/[0.045]"}`}>
       <p className="font-bold">{title}</p>
       <p className="mt-2 text-sm text-white/50">{subtitle}</p>
-      <button onClick={onUse} className="mt-4 rounded-full border border-white/12 bg-white/8 px-4 py-2 text-sm font-bold text-volt">{active ? "当前使用" : "使用此连接"}</button>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button onClick={onUse} className="rounded-full border border-white/12 bg-white/8 px-4 py-2 text-sm font-bold text-volt">{active ? "当前使用" : "使用此连接"}</button>
+        {onDelete && (
+          <button onClick={onDelete} className="rounded-full border border-plasma/25 bg-plasma/10 px-3 py-2 text-sm font-bold text-plasma transition hover:bg-plasma hover:text-white">
+            删除
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function UsageView({ logs, user, onOpenAuth, onRefresh }: { logs: UsageLog[]; user: User | null; onOpenAuth: () => void; onRefresh: () => void }) {
-  if (!user) {
-    return <EmptyState title="登录后查看使用记录" description="快速连接不会保存到个人记录。注册后可以查看生成历史、常用连接和消耗情况。" action="登录 / 注册" onAction={onOpenAuth} />;
-  }
+function UsageView({
+  logs,
+  onRefresh,
+  onDelete,
+  onClear,
+}: {
+  logs: UsageLog[];
+  onRefresh: () => void;
+  onDelete: (id: string) => void;
+  onClear: () => void;
+}) {
   return (
     <motion.section initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-[28px] p-5">
       <div className="mb-5 flex items-center justify-between">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-volt/80">Usage</p>
-          <h2 className="mt-2 text-2xl font-black">使用记录</h2>
+          <h2 className="mt-2 text-2xl font-black">本地使用记录</h2>
+          <p className="mt-2 text-sm text-white/48">记录只保存在当前浏览器，不会写入服务器。</p>
         </div>
-        <button onClick={onRefresh} className="rounded-full border border-white/12 bg-white/8 px-4 py-2 text-sm font-bold">刷新</button>
-      </div>
-      <div className="overflow-hidden rounded-3xl border border-white/10">
-        <table className="w-full min-w-[780px] text-left text-sm">
-          <thead className="bg-white/[0.06] text-white/48">
-            <tr><th className="p-3">时间</th><th className="p-3">连接</th><th className="p-3">模型</th><th className="p-3">模式</th><th className="p-3">数量</th><th className="p-3">状态</th><th className="p-3">提示词</th></tr>
+          <div className="flex gap-2">
+            <button onClick={onRefresh} className="rounded-full border border-white/12 bg-white/8 px-4 py-2 text-sm font-bold">刷新</button>
+            <button onClick={onClear} disabled={!logs.length} className="rounded-full border border-plasma/30 bg-plasma/10 px-4 py-2 text-sm font-bold text-plasma disabled:cursor-not-allowed disabled:opacity-40">清空记录</button>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-3xl border border-white/10">
+          <table className="w-full min-w-[780px] text-left text-sm">
+            <thead className="bg-white/[0.06] text-white/48">
+            <tr><th className="p-3">时间</th><th className="p-3">连接</th><th className="p-3">模型</th><th className="p-3">模式</th><th className="p-3">数量</th><th className="p-3">状态</th><th className="p-3">提示词</th><th className="p-3 text-right">操作</th></tr>
           </thead>
           <tbody>
             {logs.map((log) => (
@@ -1094,13 +1246,17 @@ function UsageView({ logs, user, onOpenAuth, onRefresh }: { logs: UsageLog[]; us
                 <td className="p-3">{log.imageCount}</td>
                 <td className={`p-3 ${log.status === "success" ? "text-volt" : "text-plasma"}`}>{log.status}</td>
                 <td className="max-w-sm truncate p-3 text-white/52">{log.error || log.prompt}</td>
+                <td className="p-3 text-right">
+                  <button onClick={() => onDelete(log.id)} className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-xs font-bold text-white/58 transition hover:border-plasma/50 hover:text-plasma">删除</button>
+                </td>
               </tr>
             ))}
-            {!logs.length && <tr><td className="p-6 text-center text-white/50" colSpan={7}>暂无使用记录</td></tr>}
+            {!logs.length && <tr><td className="p-6 text-center text-white/50" colSpan={8}>暂无使用记录</td></tr>}
           </tbody>
-        </table>
-      </div>
-    </motion.section>
+          </table>
+        </div>
+        <p className="mt-4 text-xs leading-5 text-white/42">本地记录保存文本元数据，生成图片保留在当前浏览器本地画廊中。清空浏览器数据会同时移除这些内容。</p>
+      </motion.section>
   );
 }
 

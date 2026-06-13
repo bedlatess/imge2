@@ -753,6 +753,16 @@ app.get("/api/usage", (req, res) => {
   });
 });
 
+app.delete("/api/usage", requireUser, (req, res) => {
+  db.prepare("DELETE FROM usage_logs WHERE user_id = ?").run(req.auth.user.id);
+  res.json({ ok: true });
+});
+
+app.delete("/api/usage/:id", requireUser, (req, res) => {
+  db.prepare("DELETE FROM usage_logs WHERE id = ? AND user_id = ?").run(req.params.id, req.auth.user.id);
+  res.json({ ok: true });
+});
+
 app.post("/api/images/generate", upload.single("image"), async (req, res) => {
   const auth = getAuth(req);
   const prompt = String(req.body.prompt || "").trim();
@@ -774,7 +784,6 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
   const requestedCount = Math.max(1, Number(req.body.n || 1) || 1);
   const urlDiagnostic = validateProviderUrl(provider, isEdit);
   if (urlDiagnostic) {
-    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: urlDiagnostic.title });
     sendDiagnostic(res, urlDiagnostic);
     return;
   }
@@ -818,7 +827,6 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
     const payload = await readUpstreamJson(response);
     if (!response.ok) {
       const diagnostic = diagnoseUpstreamFailure({ status: response.status, payload, provider, upstreamUrl, isEdit, model });
-      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
       sendDiagnostic(res, diagnostic);
       return;
     }
@@ -826,12 +834,10 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
     const images = extractImages(payload, outputFormat);
     if (!images.length) {
       const diagnostic = diagnoseResponseShape(payload, upstreamUrl);
-      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
       sendDiagnostic(res, diagnostic);
       return;
     }
 
-    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: images.length, status: "success" });
     res.json({
       images,
       model,
@@ -844,7 +850,6 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
     });
   } catch (error) {
     const diagnostic = diagnoseThrownError(error, upstreamUrl);
-    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
     sendDiagnostic(res, diagnostic);
   }
 });
