@@ -32,6 +32,7 @@ const DEFAULT_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "http://127.0.0.1:5173";
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS || 168) * 60 * 60 * 1000;
 const ENCRYPTION_SECRET = process.env.APP_ENCRYPTION_SECRET || "dev-only-change-me";
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_SECONDS || 90) * 1000;
 
 app.use(cors({ origin: ALLOWED_ORIGIN, credentials: false }));
 app.use(express.json({ limit: "2mb" }));
@@ -226,6 +227,66 @@ function normalizeImageSource(value, fallbackFormat = "png") {
   return `data:image/${fallbackFormat};base64,${value}`;
 }
 
+function createDiagnostic({ code, title, suggestion, detail, status = 500, upstreamStatus = null, upstreamUrl = "" }) {
+  return {
+    code,
+    title,
+    suggestion,
+    detail: String(detail || "").slice(0, 1200),
+    status,
+    upstreamStatus,
+    upstreamUrl,
+  };
+}
+
+function sendDiagnostic(res, diagnostic) {
+  res.status(diagnostic.status || 500).json({
+    error: diagnostic.title,
+    diagnostic,
+  });
+}
+
+function looksLikeFullImageEndpoint(baseUrl) {
+  return /\/images\/(generations|edits)$/i.test(baseUrl.replace(/\/+$/, ""));
+}
+
+function looksLikeMissingV1(baseUrl) {
+  try {
+    const url = new URL(baseUrl);
+    return !/\/v\d+(\/)?$/i.test(url.pathname) && !/\/openai\/v\d+(\/)?$/i.test(url.pathname) && !/\/api\/v\d+(\/)?$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function buildUpstreamUrl(provider, isEdit) {
+  const cleanBase = provider.baseUrl.replace(/\/+$/, "");
+  return `${cleanBase}/${isEdit ? "images/edits" : "images/generations"}`;
+}
+
+function validateProviderUrl(provider, isEdit) {
+  if (!/^https?:\/\//i.test(provider.baseUrl)) {
+    return createDiagnostic({
+      code: "INVALID_SERVICE_URL",
+      title: "服务地址格式不正确。",
+      suggestion: "请填写完整地址，例如 https://api.example.com/v1。",
+      detail: `当前服务地址：${provider.baseUrl}`,
+      status: 400,
+    });
+  }
+  if (looksLikeFullImageEndpoint(provider.baseUrl)) {
+    return createDiagnostic({
+      code: "FULL_ENDPOINT_USED_AS_BASE_URL",
+      title: "服务地址填成了完整生成接口。",
+      suggestion: "这里应填写接口根地址，例如 https://api.gjx88.com/v1，而不是 /images/generations。系统会自动追加生成路径。",
+      detail: `当前会被拼接为：${buildUpstreamUrl(provider, isEdit)}`,
+      status: 400,
+      upstreamUrl: buildUpstreamUrl(provider, isEdit),
+    });
+  }
+  return null;
+}
+
 function extractImages(payload, outputFormat) {
   const data = Array.isArray(payload?.data) ? payload.data : [];
   const images = data
@@ -246,6 +307,14 @@ function extractImages(payload, outputFormat) {
     .filter(Boolean);
 }
 
+function summarizePayload(payload) {
+  try {
+    return JSON.stringify(payload).slice(0, 1200);
+  } catch {
+    return String(payload || "").slice(0, 1200);
+  }
+}
+
 async function readUpstreamJson(response) {
   const text = await response.text();
   try {
@@ -255,6 +324,138 @@ async function readUpstreamJson(response) {
     error.status = response.status;
     throw error;
   }
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function diagnoseUpstreamFailure({ status, payload, provider, upstreamUrl, isEdit, model }) {
+  const rawMessage = payload?.error?.message || payload?.error || payload?.message || payload?.detail || payload?.msg || "";
+  const message = typeof rawMessage === "string" ? rawMessage : summarizePayload(rawMessage);
+  const lower = message.toLowerCase();
+
+  if (status === 401 || status === 403 || /invalid api key|incorrect api key|unauthorized|forbidden|无效.*key|鉴权|认证|权限/.test(lower)) {
+    return createDiagnostic({
+      code: "AUTH_FAILED",
+      title: "访问凭证无效或没有权限。",
+      suggestion: "请检查访问凭证是否复制完整、是否过期、余额是否充足，以及该凭证是否允许调用图像模型。",
+      detail: message || `上游返回 HTTP ${status}`,
+      status: 502,
+      upstreamStatus: status,
+      upstreamUrl,
+    });
+  }
+
+  if (status === 404 || /not found|no route|route not|resource not found|不存在|路径/.test(lower)) {
+    return createDiagnostic({
+      code: "ROUTE_NOT_FOUND",
+      title: "服务地址或接口路径不正确。",
+      suggestion: looksLikeMissingV1(provider.baseUrl)
+        ? "这个服务可能需要以 /v1 结尾。请尝试把服务地址改成类似 https://api.example.com/v1。"
+        : "请确认服务地址是接口根地址，不要填写完整的 /images/generations 或 /images/edits。",
+      detail: `请求地址：${upstreamUrl}\n上游信息：${message || "Not Found"}`,
+      status: 502,
+      upstreamStatus: status,
+      upstreamUrl,
+    });
+  }
+
+  if (status === 400 && /model|模型/.test(lower)) {
+    return createDiagnostic({
+      code: "MODEL_NOT_AVAILABLE",
+      title: "当前模型不可用或名称不正确。",
+      suggestion: `请检查模型名称是否和服务商后台完全一致。当前模型：${model}`,
+      detail: message || `上游返回 HTTP ${status}`,
+      status: 502,
+      upstreamStatus: status,
+      upstreamUrl,
+    });
+  }
+
+  if (status === 400 && isEdit && /image|multipart|file|unsupported|不支持|图片/.test(lower)) {
+    return createDiagnostic({
+      code: "IMAGE_TO_IMAGE_UNSUPPORTED",
+      title: "当前连接可能不支持图生图。",
+      suggestion: "请换一个支持图片编辑的模型，或先移除垫图改用文生图。",
+      detail: message || `上游返回 HTTP ${status}`,
+      status: 502,
+      upstreamStatus: status,
+      upstreamUrl,
+    });
+  }
+
+  if (status === 429 || /rate limit|quota|余额|额度|insufficient|too many/.test(lower)) {
+    return createDiagnostic({
+      code: "QUOTA_OR_RATE_LIMIT",
+      title: "额度不足或请求过于频繁。",
+      suggestion: "请检查服务商余额、套餐额度或稍后重试。",
+      detail: message || `上游返回 HTTP ${status}`,
+      status: 502,
+      upstreamStatus: status,
+      upstreamUrl,
+    });
+  }
+
+  return createDiagnostic({
+    code: "UPSTREAM_ERROR",
+    title: "图像服务返回错误。",
+    suggestion: "请根据下方技术细节检查服务商后台、模型名称和参数是否匹配。",
+    detail: message || summarizePayload(payload) || `上游返回 HTTP ${status}`,
+    status: 502,
+    upstreamStatus: status,
+    upstreamUrl,
+  });
+}
+
+function diagnoseResponseShape(payload, upstreamUrl) {
+  return createDiagnostic({
+    code: "UNSUPPORTED_RESPONSE_FORMAT",
+    title: "图像服务返回格式暂未识别。",
+    suggestion: "该服务可能不是 OpenAI 图像兼容格式。请换用 OpenAI 兼容连接，或后续在工作区连接里选择对应服务商适配器。",
+    detail: summarizePayload(payload),
+    status: 502,
+    upstreamStatus: 200,
+    upstreamUrl,
+  });
+}
+
+function diagnoseThrownError(error, upstreamUrl) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (error?.name === "AbortError") {
+    return createDiagnostic({
+      code: "UPSTREAM_TIMEOUT",
+      title: "图像服务响应超时。",
+      suggestion: "图片生成可能排队较久，请降低生成数量，或稍后重试。",
+      detail: `超过 ${UPSTREAM_TIMEOUT_MS / 1000} 秒未收到响应。`,
+      status: 504,
+      upstreamUrl,
+    });
+  }
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|certificate|TLS|network/i.test(message)) {
+    return createDiagnostic({
+      code: "NETWORK_ERROR",
+      title: "无法连接到图像服务。",
+      suggestion: "请检查服务地址是否能从服务器访问，域名解析和 HTTPS 证书是否正常。",
+      detail: message,
+      status: 502,
+      upstreamUrl,
+    });
+  }
+  return createDiagnostic({
+    code: "SERVER_PROXY_ERROR",
+    title: "生成代理出现异常。",
+    suggestion: "请稍后重试；如果持续出现，请联系管理员查看后端日志。",
+    detail: message,
+    status: error?.status || 500,
+    upstreamUrl,
+  });
 }
 
 function appendSharedFormFields(form, body, provider) {
@@ -568,8 +769,14 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
   const provider = resolved.provider;
   const outputFormat = String(req.body.output_format || "png");
   const isEdit = Boolean(req.file);
-  const upstreamUrl = `${provider.baseUrl}/${isEdit ? "images/edits" : "images/generations"}`;
+  const upstreamUrl = buildUpstreamUrl(provider, isEdit);
   const model = String(req.body.model || provider.defaultModel || DEFAULT_MODEL);
+  const urlDiagnostic = validateProviderUrl(provider, isEdit);
+  if (urlDiagnostic) {
+    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: urlDiagnostic.title });
+    sendDiagnostic(res, urlDiagnostic);
+    return;
+  }
 
   try {
     let response;
@@ -579,7 +786,7 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
       appendSharedFormFields(form, { ...req.body, model }, provider);
       const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "application/octet-stream" });
       form.append("image", blob, req.file.originalname || "reference.png");
-      response = await fetch(upstreamUrl, {
+      response = await fetchWithTimeout(upstreamUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${provider.apiKey}` },
         body: form,
@@ -597,7 +804,7 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
         payload.output_compression = Number(req.body.output_compression);
       }
 
-      response = await fetch(upstreamUrl, {
+      response = await fetchWithTimeout(upstreamUrl, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${provider.apiKey}`,
@@ -609,17 +816,17 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
 
     const payload = await readUpstreamJson(response);
     if (!response.ok) {
-      const message = payload?.error?.message || payload?.message || payload?.detail || "Upstream image API request failed.";
-      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: message });
-      res.status(response.status).json({ error: message, upstreamStatus: response.status });
+      const diagnostic = diagnoseUpstreamFailure({ status: response.status, payload, provider, upstreamUrl, isEdit, model });
+      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
+      sendDiagnostic(res, diagnostic);
       return;
     }
 
     const images = extractImages(payload, outputFormat);
     if (!images.length) {
-      const message = "No image data found in upstream response.";
-      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: message });
-      res.status(502).json({ error: message, upstream: payload });
+      const diagnostic = diagnoseResponseShape(payload, upstreamUrl);
+      logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
+      sendDiagnostic(res, diagnostic);
       return;
     }
 
@@ -632,9 +839,9 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
       createdAt: nowIso(),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Image generation failed.";
-    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: message });
-    res.status(error.status || 500).json({ error: message });
+    const diagnostic = diagnoseThrownError(error, upstreamUrl);
+    logUsage({ userId: auth?.user?.id, provider, prompt, model, mode: isEdit ? "edit" : "generate", imageCount: 0, status: "failed", error: diagnostic.title });
+    sendDiagnostic(res, diagnostic);
   }
 });
 

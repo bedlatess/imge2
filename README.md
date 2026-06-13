@@ -11,6 +11,8 @@
 - 游客快速连接图像服务
 - 注册用户保存个人连接
 - 管理员配置工作区连接并授权用户使用
+- OpenAI 兼容接口、NewAPI、SubAPI 和常见国产中转模型
+- 错误诊断提示，能区分服务地址、访问凭证、模型、额度、超时和响应格式问题
 - 连接凭证加密保存
 - 使用记录与生成历史
 - Docker / Docker Compose 一键部署
@@ -110,6 +112,7 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_API_KEY=
 MAX_UPLOAD_MB=20
 SESSION_TTL_HOURS=168
+UPSTREAM_TIMEOUT_SECONDS=90
 APP_ENCRYPTION_SECRET=replace-with-your-long-random-secret
 ```
 
@@ -119,6 +122,50 @@ APP_ENCRYPTION_SECRET=replace-with-your-long-random-secret
 - `docker-compose.yml` 默认把宿主机 `12001` 映射到容器 `8787`。
 - `APP_ENCRYPTION_SECRET` 用于加密连接凭证，生产环境必须固定且妥善保存。
 - `OPENAI_API_KEY` 可以为空，管理员后续可以在网页管理后台配置工作区连接。
+- `UPSTREAM_TIMEOUT_SECONDS` 是等待上游图像服务响应的最长时间。
+
+## 连接服务地址怎么填
+
+大多数 NewAPI、SubAPI、OpenAI 兼容中转站应该填写接口根地址：
+
+```text
+https://api.example.com/v1
+```
+
+不要填写完整生成接口：
+
+```text
+https://api.example.com/v1/images/generations
+```
+
+系统会自动根据文生图或图生图追加：
+
+```text
+/images/generations
+/images/edits
+```
+
+国产图像模型如果通过中转站以 OpenAI 兼容方式提供，一般只需要填写对应模型名，例如：
+
+```text
+Qwen_Image
+造相Z-Image-Turbo
+runqing-Z-Image-Turbo-Tongyi-MAI-v1.0
+```
+
+## 常见错误代码
+
+| 代码 | 含义 | 处理方式 |
+| --- | --- | --- |
+| `FULL_ENDPOINT_USED_AS_BASE_URL` | 服务地址填成了完整生成接口 | 改成以 `/v1` 结尾的接口根地址 |
+| `INVALID_SERVICE_URL` | 服务地址格式不正确 | 确认以 `http://` 或 `https://` 开头 |
+| `AUTH_FAILED` | 访问凭证无效或没有权限 | 检查凭证、余额、模型权限 |
+| `ROUTE_NOT_FOUND` | 服务地址或路径不正确 | 尝试补上 `/v1`，不要填完整接口路径 |
+| `MODEL_NOT_AVAILABLE` | 模型名称不可用 | 到服务商后台复制准确模型名 |
+| `IMAGE_TO_IMAGE_UNSUPPORTED` | 当前连接不支持图生图 | 移除垫图或更换支持图生图的模型 |
+| `QUOTA_OR_RATE_LIMIT` | 额度不足或请求频率过高 | 检查余额、套餐或稍后重试 |
+| `UPSTREAM_TIMEOUT` | 图像服务响应超时 | 降低生成数量或稍后重试 |
+| `UNSUPPORTED_RESPONSE_FORMAT` | 返回格式暂未识别 | 换用 OpenAI 兼容接口或等待新增适配器 |
 
 ## 单 Docker 命令部署
 

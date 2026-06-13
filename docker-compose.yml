@@ -15,6 +15,7 @@ services:
       OPENAI_IMAGE_MODEL: gpt-image-2
       SESSION_TTL_HOURS: 168
       MAX_UPLOAD_MB: 20
+      UPSTREAM_TIMEOUT_SECONDS: 90
       APP_ENCRYPTION_SECRET: ${APP_ENCRYPTION_SECRET:-replace-with-a-long-random-secret}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:

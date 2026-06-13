@@ -85,6 +85,26 @@ type GalleryImage = {
   providerName?: string;
 };
 
+type ApiDiagnostic = {
+  code: string;
+  title: string;
+  suggestion: string;
+  detail?: string;
+  status?: number;
+  upstreamStatus?: number | null;
+  upstreamUrl?: string;
+};
+
+class ImageApiError extends Error {
+  diagnostic?: ApiDiagnostic;
+
+  constructor(message: string, diagnostic?: ApiDiagnostic) {
+    super(message);
+    this.name = "ImageApiError";
+    this.diagnostic = diagnostic;
+  }
+}
+
 const STORAGE_KEY = "astraforge.app.config";
 const TOKEN_KEY = "astraforge.session.token";
 const DEFAULT_BACKEND_URL = typeof window !== "undefined" && window.location.port !== "5173"
@@ -107,6 +127,15 @@ const ratios = [
   { label: "16:9", value: "1792x1024" },
   { label: "9:16", value: "1024x1792" },
   { label: "Auto", value: "auto" },
+];
+
+const modelPresets = [
+  { label: "GPT Image 2", value: "gpt-image-2" },
+  { label: "GPT Image 1.5", value: "gpt-image-1.5" },
+  { label: "GPT Image 1", value: "gpt-image-1" },
+  { label: "Qwen Image", value: "Qwen_Image" },
+  { label: "造相 Z Turbo", value: "造相Z-Image-Turbo" },
+  { label: "Z-Image Turbo", value: "runqing-Z-Image-Turbo-Tongyi-MAI-v1.0" },
 ];
 
 function loadConfig(): AppConfig {
@@ -167,7 +196,7 @@ async function callBackendImageApi(
     body: form,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `后端请求失败：HTTP ${response.status}`);
+  if (!response.ok) throw new ImageApiError(payload.error || `后端请求失败：HTTP ${response.status}`, payload.diagnostic);
   const images = Array.isArray(payload.images) ? payload.images.filter((item: unknown) => typeof item === "string") : [];
   if (!images.length) throw new Error("后端响应中没有可用图片。");
 
@@ -214,6 +243,7 @@ export default function App() {
   const [gallery, setGallery] = useState<GalleryImage[]>([]);
   const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
   const [error, setError] = useState("");
+  const [diagnostic, setDiagnostic] = useState<ApiDiagnostic | null>(null);
   const [userProviders, setUserProviders] = useState<Provider[]>([]);
   const [platformProviders, setPlatformProviders] = useState<Provider[]>([]);
   const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
@@ -297,9 +327,11 @@ export default function App() {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       setError("请上传 PNG、JPG、WEBP 等图片文件。");
+      setDiagnostic(null);
       return;
     }
     setError("");
+    setDiagnostic(null);
     setUploadFile(file);
   }
 
@@ -319,34 +351,46 @@ export default function App() {
     setParams((current) => ({ ...current, ratio: template.ratio }));
     setActiveView("studio");
     setError("");
+    setDiagnostic(null);
   }
 
   async function generate() {
     if (!prompt.trim()) {
       setError("请先输入提示词，或从提示词库选择一个模板。");
+      setDiagnostic(null);
       return;
     }
     if (backendStatus !== "ready") {
       setError("后端离线，请先启动 npm run dev。");
+      setDiagnostic(null);
       return;
     }
     if (config.providerSource === "guest" && (!config.guestBaseUrl.trim() || !config.guestApiKey.trim())) {
       setError("请先填写服务地址和访问凭证，系统只会在本次生成时使用。");
+      setDiagnostic(null);
       return;
     }
     if (config.providerSource !== "guest" && !config.providerId) {
       setError("请选择一个可用连接。");
+      setDiagnostic(null);
       return;
     }
 
     setError("");
+    setDiagnostic(null);
     setIsGenerating(true);
     try {
       const results = await callBackendImageApi(config, params, prompt.trim(), uploadFile, token);
       setGallery((current) => [...results, ...current]);
       refreshUsage();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成失败，请检查连接配置。");
+      if (err instanceof ImageApiError && err.diagnostic) {
+        setError(err.message);
+        setDiagnostic(err.diagnostic);
+      } else {
+        setError(err instanceof Error ? err.message : "生成失败，请检查连接配置。");
+        setDiagnostic(null);
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -428,6 +472,7 @@ export default function App() {
               isDragging={isDragging}
               isGenerating={isGenerating}
               error={error}
+              diagnostic={diagnostic}
               currentChannelLabel={currentChannelLabel}
               config={config}
               userProviders={userProviders}
@@ -582,6 +627,7 @@ function StudioPanel(props: {
   isDragging: boolean;
   isGenerating: boolean;
   error: string;
+  diagnostic: ApiDiagnostic | null;
   currentChannelLabel: string;
   config: AppConfig;
   userProviders: Provider[];
@@ -653,6 +699,27 @@ function StudioPanel(props: {
             />
           </div>
         )}
+        <div className="mt-3 rounded-2xl border border-white/8 bg-black/18 p-3">
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/36">模型预设</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {modelPresets.map((preset) => (
+              <button
+                key={preset.value}
+                type="button"
+                onClick={() => props.onConfigChange((current) => ({ ...current, model: preset.value }))}
+                className={`rounded-full border px-2.5 py-1.5 text-[11px] font-bold transition ${props.config.model === preset.value ? "border-volt bg-volt/16 text-volt" : "border-white/10 bg-white/6 text-white/56 hover:text-white"}`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <input
+            value={props.config.model}
+            onChange={(event) => props.onConfigChange((current) => ({ ...current, model: event.target.value }))}
+            className="mt-2 w-full rounded-2xl border border-white/10 bg-black/24 px-3 py-2 text-sm text-white outline-none"
+            placeholder="模型名称，例如 gpt-image-2 / Qwen_Image"
+          />
+        </div>
       </div>
 
       <label
@@ -714,13 +781,53 @@ function StudioPanel(props: {
         <PillGroup label="格式" options={[{ label: "PNG", value: "png" }, { label: "WEBP", value: "webp" }, { label: "JPEG", value: "jpeg" }]} value={props.params.format} onChange={(value) => props.onParamsChange((current) => ({ ...current, format: value }))} />
       </div>
 
-      {props.error && <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 rounded-2xl border border-plasma/30 bg-plasma/10 px-4 py-3 text-sm text-plasma">{props.error}</motion.div>}
+      {props.error && <DiagnosticPanel error={props.error} diagnostic={props.diagnostic} />}
 
       <button onClick={props.onGenerate} disabled={props.isGenerating} className="mt-5 flex w-full items-center justify-center gap-3 rounded-3xl bg-gradient-to-r from-volt via-aurora to-plasma px-5 py-4 text-sm font-extrabold text-white shadow-magenta transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-70">
         {props.isGenerating ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
         {props.isGenerating ? "正在生成..." : props.previewUrl ? "开始图生图" : "生成图像"}
       </button>
     </motion.aside>
+  );
+}
+
+function DiagnosticPanel({ error, diagnostic }: { error: string; diagnostic: ApiDiagnostic | null }) {
+  if (!diagnostic) {
+    return (
+      <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 rounded-2xl border border-plasma/30 bg-plasma/10 px-4 py-3 text-sm text-plasma">
+        {error}
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="mt-4 overflow-hidden rounded-3xl border border-plasma/30 bg-plasma/10 text-sm">
+      <div className="border-b border-white/10 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full border border-plasma/35 bg-plasma/15 px-2.5 py-1 font-mono text-[11px] font-bold text-plasma">{diagnostic.code}</span>
+          {diagnostic.upstreamStatus && <span className="rounded-full border border-white/10 bg-white/8 px-2.5 py-1 font-mono text-[11px] text-white/62">HTTP {diagnostic.upstreamStatus}</span>}
+        </div>
+        <p className="mt-3 font-bold text-plasma">{diagnostic.title || error}</p>
+      </div>
+      <div className="space-y-3 px-4 py-3 text-white/70">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/38">建议</p>
+          <p className="mt-1 leading-6">{diagnostic.suggestion}</p>
+        </div>
+        {diagnostic.upstreamUrl && (
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/38">请求地址</p>
+            <p className="mt-1 break-all font-mono text-xs text-white/55">{diagnostic.upstreamUrl}</p>
+          </div>
+        )}
+        {diagnostic.detail && (
+          <details className="rounded-2xl border border-white/10 bg-black/20 p-3">
+            <summary className="cursor-pointer text-xs font-bold text-white/58">技术细节</summary>
+            <pre className="mt-3 max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-white/50">{diagnostic.detail}</pre>
+          </details>
+        )}
+      </div>
+    </motion.div>
   );
 }
 
@@ -890,10 +997,10 @@ function ChannelsView({ config, token, user, userProviders, platformProviders, o
       <div className="glass rounded-[28px] p-5">
         <p className="font-mono text-[11px] uppercase tracking-[0.34em] text-volt/80">Connection Center</p>
         <h2 className="mt-2 text-2xl font-black">个人连接</h2>
-        <p className="mt-3 text-sm leading-6 text-white/54">登录后可以保存常用的图像服务地址。凭证会加密存放，只在你发起生成时发送给对应服务。</p>
+        <p className="mt-3 text-sm leading-6 text-white/54">登录后可以保存常用的图像服务地址。OpenAI 兼容、新版中转站、NewAPI、SubAPI 通常填写到 /v1，凭证会加密存放。</p>
         <div className="mt-5 grid gap-3">
           <Input value={form.name} placeholder="连接名称，例如 我的图像服务" onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-          <Input value={form.baseUrl} placeholder="服务地址，例如 https://example.com/v1" onChange={(value) => setForm((current) => ({ ...current, baseUrl: value }))} />
+          <Input value={form.baseUrl} placeholder="服务地址，例如 https://example.com/v1，不要填 /images/generations" onChange={(value) => setForm((current) => ({ ...current, baseUrl: value }))} />
           <Input value={form.apiKey} type="password" placeholder="访问凭证，会加密保存" onChange={(value) => setForm((current) => ({ ...current, apiKey: value }))} />
           <Input value={form.defaultModel} placeholder="默认模型，例如 gpt-image-2" onChange={(value) => setForm((current) => ({ ...current, defaultModel: value }))} />
           <button onClick={addProvider} className="flex items-center justify-center gap-2 rounded-2xl bg-volt px-4 py-3 text-sm font-extrabold text-ink">
@@ -996,7 +1103,7 @@ function AdminView({ user, token, backendUrl, users, providers, onRefresh }: { u
         <h2 className="mt-2 text-2xl font-black">工作区连接</h2>
         <div className="mt-5 grid gap-3">
           <Input value={form.name} placeholder="名称" onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-          <Input value={form.baseUrl} placeholder="服务地址" onChange={(value) => setForm((current) => ({ ...current, baseUrl: value }))} />
+          <Input value={form.baseUrl} placeholder="服务地址，例如 https://example.com/v1" onChange={(value) => setForm((current) => ({ ...current, baseUrl: value }))} />
           <Input type="password" value={form.apiKey} placeholder="工作区访问凭证" onChange={(value) => setForm((current) => ({ ...current, apiKey: value }))} />
           <Input value={form.defaultModel} placeholder="默认模型" onChange={(value) => setForm((current) => ({ ...current, defaultModel: value }))} />
           <select value={form.accessMode} onChange={(event) => setForm((current) => ({ ...current, accessMode: event.target.value }))} className="rounded-2xl border border-white/10 bg-black/24 px-3 py-3 text-sm text-white outline-none">
@@ -1098,7 +1205,7 @@ function SettingsDrawer({ open, config, backendStatus, onClose, onChange }: { op
             </div>
             <div className="mt-7 space-y-5">
               <Input value={config.backendUrl} placeholder="http://127.0.0.1:8787" onChange={(value) => onChange((current) => ({ ...current, backendUrl: value }))} />
-              <Input value={config.model} placeholder="默认模型，例如 gpt-image-2" onChange={(value) => onChange((current) => ({ ...current, model: value }))} />
+              <Input value={config.model} placeholder="默认模型，例如 gpt-image-2 / Qwen_Image" onChange={(value) => onChange((current) => ({ ...current, model: value }))} />
               <label className="flex cursor-pointer items-start gap-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4">
                 <input type="checkbox" checked={config.sendDenoising} onChange={(event) => onChange((current) => ({ ...current, sendDenoising: event.target.checked }))} className="mt-1 h-4 w-4 accent-plasma" />
                 <span>
