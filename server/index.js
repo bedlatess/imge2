@@ -158,7 +158,7 @@ function safeProvider(row) {
     assignedUserIds: JSON.parse(row.assigned_user_ids || "[]"),
     dailyLimit: row.daily_limit,
     createdAt: row.created_at,
-    keyPreview: "••••••••",
+    keyPreview: "********",
   };
 }
 
@@ -171,7 +171,7 @@ function safeUserProvider(row) {
     defaultModel: row.default_model,
     enabled: Boolean(row.enabled),
     createdAt: row.created_at,
-    keyPreview: "••••••••",
+    keyPreview: "********",
   };
 }
 
@@ -278,7 +278,7 @@ function validateProviderUrl(provider, isEdit) {
     return createDiagnostic({
       code: "FULL_ENDPOINT_USED_AS_BASE_URL",
       title: "服务地址填成了完整生成接口。",
-      suggestion: "这里应填写接口根地址，例如 https://api.gjx88.com/v1，而不是 /images/generations。系统会自动追加生成路径。",
+      suggestion: "这里应填写接口根地址，例如 https://api.example.com/v1。系统会自动追加 /images/generations 或 /images/edits。",
       detail: `当前会被拼接为：${buildUpstreamUrl(provider, isEdit)}`,
       status: 400,
       upstreamUrl: buildUpstreamUrl(provider, isEdit),
@@ -360,7 +360,8 @@ function diagnoseUpstreamFailure({ status, payload, provider, upstreamUrl, isEdi
       suggestion: looksLikeMissingV1(provider.baseUrl)
         ? "这个服务可能需要以 /v1 结尾。请尝试把服务地址改成类似 https://api.example.com/v1。"
         : "请确认服务地址是接口根地址，不要填写完整的 /images/generations 或 /images/edits。",
-      detail: `请求地址：${upstreamUrl}\n上游信息：${message || "Not Found"}`,
+      detail: `请求地址：${upstreamUrl}
+上游信息：${message || "Not Found"}`,
       status: 502,
       upstreamStatus: status,
       upstreamUrl,
@@ -383,7 +384,7 @@ function diagnoseUpstreamFailure({ status, payload, provider, upstreamUrl, isEdi
     return createDiagnostic({
       code: "IMAGE_TO_IMAGE_UNSUPPORTED",
       title: "当前连接可能不支持图生图。",
-      suggestion: "请换一个支持图片编辑的模型，或先移除垫图改用文生图。",
+      suggestion: "请换一个支持图片编辑的模型，或先移除参考图改用文生图。",
       detail: message || `上游返回 HTTP ${status}`,
       status: 502,
       upstreamStatus: status,
@@ -395,7 +396,7 @@ function diagnoseUpstreamFailure({ status, payload, provider, upstreamUrl, isEdi
     return createDiagnostic({
       code: "QUOTA_OR_RATE_LIMIT",
       title: "额度不足或请求过于频繁。",
-      suggestion: "请检查服务商余额、套餐额度或稍后重试。",
+      suggestion: "请检查服务商余额、套餐额度，或稍后重试。",
       detail: message || `上游返回 HTTP ${status}`,
       status: 502,
       upstreamStatus: status,
@@ -581,15 +582,15 @@ app.post("/api/auth/register", (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    res.status(400).json({ error: "请输入有效邮箱。" });
+    res.status(400).json({ error: "\u8bf7\u8f93\u5165\u6709\u6548\u90ae\u7bb1\u3002" });
     return;
   }
   if (password.length < 8) {
-    res.status(400).json({ error: "密码至少 8 位。" });
+    res.status(400).json({ error: "\u5bc6\u7801\u81f3\u5c11 8 \u4f4d\u3002" });
     return;
   }
   if (getUserByEmail.get(email)) {
-    res.status(409).json({ error: "该邮箱已注册。" });
+    res.status(409).json({ error: "\u8be5\u90ae\u7bb1\u5df2\u6ce8\u518c\u3002" });
     return;
   }
 
@@ -607,7 +608,7 @@ app.post("/api/auth/login", (req, res) => {
   const password = String(req.body.password || "");
   const user = getUserByEmail.get(email);
   if (!user || !verifyPassword(password, user.password_hash)) {
-    res.status(401).json({ error: "邮箱或密码不正确。" });
+    res.status(401).json({ error: "\u90ae\u7bb1\u6216\u5bc6\u7801\u4e0d\u6b63\u786e\u3002" });
     return;
   }
   const token = randomId("sess");
@@ -645,13 +646,13 @@ app.get("/api/providers", (req, res) => {
 });
 
 app.post("/api/user/providers", requireUser, (req, res) => {
-  const name = String(req.body.name || "个人连接").trim();
+  const name = String(req.body.name || "\u4e2a\u4eba\u8fde\u63a5").trim();
   const baseUrl = String(req.body.baseUrl || "").trim().replace(/\/+$/, "");
   const apiKey = String(req.body.apiKey || "").trim();
   const defaultModel = String(req.body.defaultModel || DEFAULT_MODEL).trim();
   const type = String(req.body.type || "openai-compatible").trim();
   if (!baseUrl || !apiKey) {
-    res.status(400).json({ error: "服务地址和访问凭证必填。" });
+    res.status(400).json({ error: "\u670d\u52a1\u5730\u5740\u548c\u8bbf\u95ee\u51ed\u8bc1\u5fc5\u586b\u3002" });
     return;
   }
   const id = randomId("up");
@@ -679,7 +680,7 @@ app.get("/api/admin/platform-providers", requireAdmin, (_req, res) => {
 });
 
 app.post("/api/admin/platform-providers", requireAdmin, (req, res) => {
-  const name = String(req.body.name || "工作区连接").trim();
+  const name = String(req.body.name || "\u5de5\u4f5c\u533a\u8fde\u63a5").trim();
   const baseUrl = String(req.body.baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
   const apiKey = String(req.body.apiKey || "").trim();
   const defaultModel = String(req.body.defaultModel || DEFAULT_MODEL).trim();
@@ -688,7 +689,7 @@ app.post("/api/admin/platform-providers", requireAdmin, (req, res) => {
   const assignedUserIds = Array.isArray(req.body.assignedUserIds) ? req.body.assignedUserIds : [];
   const dailyLimit = Number(req.body.dailyLimit || 100);
   if (!baseUrl || !apiKey) {
-    res.status(400).json({ error: "服务地址和访问凭证必填。" });
+    res.status(400).json({ error: "\u670d\u52a1\u5730\u5740\u548c\u8bbf\u95ee\u51ed\u8bc1\u5fc5\u586b\u3002" });
     return;
   }
   const id = randomId("pp");
@@ -765,7 +766,9 @@ app.delete("/api/usage/:id", requireUser, (req, res) => {
 
 app.post("/api/images/generate", upload.single("image"), async (req, res) => {
   const auth = getAuth(req);
-  const prompt = String(req.body.prompt || "").trim();
+  const body = req.body || {};
+  req.body = body;
+  const prompt = String(body.prompt || "").trim();
   if (!prompt) {
     res.status(400).json({ error: "Prompt is required." });
     return;
@@ -777,11 +780,11 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
     return;
   }
   const provider = resolved.provider;
-  const outputFormat = String(req.body.output_format || "png");
+  const outputFormat = String(body.output_format || "png");
   const isEdit = Boolean(req.file);
   const upstreamUrl = buildUpstreamUrl(provider, isEdit);
-  const model = String(req.body.model || provider.defaultModel || DEFAULT_MODEL);
-  const requestedCount = Math.max(1, Number(req.body.n || 1) || 1);
+  const model = String(body.model || provider.defaultModel || DEFAULT_MODEL);
+  const requestedCount = Math.max(1, Number(body.n || 1) || 1);
   const urlDiagnostic = validateProviderUrl(provider, isEdit);
   if (urlDiagnostic) {
     sendDiagnostic(res, urlDiagnostic);
@@ -793,7 +796,7 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
 
     if (isEdit) {
       const form = new FormData();
-      appendSharedFormFields(form, { ...req.body, model }, provider);
+      appendSharedFormFields(form, { ...body, model }, provider);
       const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "application/octet-stream" });
       form.append("image", blob, req.file.originalname || "reference.png");
       response = await fetchWithTimeout(upstreamUrl, {
@@ -805,13 +808,13 @@ app.post("/api/images/generate", upload.single("image"), async (req, res) => {
       const payload = {
         model,
         prompt,
-        size: req.body.size || "1024x1024",
+        size: body.size || "1024x1024",
         n: requestedCount,
-        quality: req.body.quality || "auto",
+        quality: body.quality || "auto",
         output_format: outputFormat,
       };
-      if (outputFormat !== "png" && req.body.output_compression) {
-        payload.output_compression = Number(req.body.output_compression);
+      if (outputFormat !== "png" && body.output_compression) {
+        payload.output_compression = Number(body.output_compression);
       }
 
       response = await fetchWithTimeout(upstreamUrl, {

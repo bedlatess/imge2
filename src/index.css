@@ -27,16 +27,13 @@ body {
   min-height: 100vh;
   margin: 0;
   overflow-x: hidden;
-  background:
-    linear-gradient(120deg, rgba(5, 7, 16, 0.96), rgba(9, 16, 32, 0.92)),
-    radial-gradient(circle at top left, rgba(51, 247, 255, 0.14), transparent 32%),
-    radial-gradient(circle at bottom right, rgba(255, 61, 154, 0.16), transparent 28%),
-    #050710;
+  background: #050710;
 }
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -45,27 +42,77 @@ button {
 }
 
 ::selection {
-  color: #050710;
-  background: #33f7ff;
+  color: #041015;
+  background: #67e8f9;
 }
 
-.glass {
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.045));
-  box-shadow: 0 20px 90px rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(24px);
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-white/10 bg-[rgba(8,11,18,0.82)] shadow-[0_22px_80px_rgba(0,0,0,.32)] backdrop-blur-xl;
+  }
+
+  .label {
+    @apply font-mono text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-200/70;
+  }
+
+  .field-label {
+    @apply text-xs font-bold uppercase tracking-[0.16em] text-white/[0.42];
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-xl bg-cyan-200 px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-cyan-100;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.045] px-3 py-2 text-sm font-bold text-white/[0.72] transition hover:border-cyan-300/[0.45] hover:text-cyan-100;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/[0.24] px-3 py-2 text-sm font-bold text-white/[0.58] transition hover:border-cyan-300/[0.45] hover:text-cyan-100;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-2 rounded-lg border border-rose-300/[0.22] bg-rose-400/[0.08] px-3 py-2 text-sm font-bold text-rose-200 transition hover:border-rose-300/[0.55] hover:bg-rose-400/[0.14];
+  }
+
+  .chip {
+    @apply inline-flex shrink-0 items-center rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 text-sm font-bold text-white/[0.58] transition hover:border-cyan-300/[0.45] hover:text-cyan-100;
+  }
+
+  .chip-active {
+    @apply border-cyan-300/70 bg-cyan-300/[0.12] text-cyan-100 shadow-[0_0_24px_rgba(103,232,249,.12)];
+  }
+
+  .input-like {
+    @apply w-full rounded-xl border border-white/10 bg-black/[0.28] px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-white/[0.24] focus:border-cyan-300/70 focus:ring-4 focus:ring-cyan-300/10;
+  }
+
+  .image-tile {
+    @apply rounded-2xl border border-white/10 bg-white/[0.035] shadow-[inset_0_1px_0_rgba(255,255,255,.04)];
+  }
 }
 
-.fine-grid {
+.circuit-bg {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(103, 232, 249, 0.16), transparent 26%),
+    radial-gradient(circle at 88% 18%, rgba(251, 191, 36, 0.12), transparent 24%),
+    radial-gradient(circle at 58% 86%, rgba(20, 184, 166, 0.12), transparent 26%),
+    linear-gradient(120deg, rgba(5, 7, 16, 0.96), rgba(7, 11, 18, 0.94));
+}
+
+.circuit-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 42px 42px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), transparent);
+    linear-gradient(rgba(255, 255, 255, 0.032) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), transparent 80%);
 }
 
 .range-glow {
-  accent-color: #33f7ff;
+  accent-color: #67e8f9;
 }
 
 .hide-scrollbar {
